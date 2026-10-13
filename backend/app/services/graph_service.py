@@ -1,5 +1,4 @@
 """Prerequisite-graph validation and AI revision."""
-import json
 
 from pydantic import BaseModel
 
@@ -144,9 +143,13 @@ def apply_patch(graph: ConceptGraph, patch: GraphPatch) -> ConceptGraph:
 
 
 async def revise(graph: ConceptGraph, feedback: str, report: ValidationReport) -> ConceptGraph:
-    user = json.dumps({"graph": graph.model_dump(mode="json"), "feedback": feedback,
-                       "known_problems": {"cycles": report.cycles, "redundant_edges": report.redundant_edges,
-                                          "orphans": report.orphans}})
+    # only what the model needs to reference and edit: concepts as id/name/unit/topic, edges as [source,target,type]
+    # (descriptions, minutes, confidence and evidence are kept on the server and only matter for what it changes)
+    slim = {"concepts": [{"id": c.id, "name": c.name, "unit": c.unit, "topic": c.topic} for c in graph.concepts],
+            "relationships": [[r.source, r.target, r.type.value] for r in graph.relationships]}
+    problems = {k: v for k, v in {"cycles": report.cycles, "redundant_edges": report.redundant_edges,
+                                  "orphans": report.orphans}.items() if v}
+    user = llm_service.compact({"graph": slim, "feedback": feedback, "known_problems": problems})
     # the prompt still carries the whole graph as context (the model needs it to reference concepts correctly), but
     # the *output* is now just the delta, which is what was making a revision on a large graph slow to the point of
     # timing out: the model no longer has to regenerate every unchanged concept and relationship verbatim.

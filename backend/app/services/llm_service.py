@@ -28,6 +28,11 @@ class RateLimitError(LLMError):
         self.retry_after = retry_after
 
 
+def compact(obj) -> str:
+    """Minified JSON for prompts: no spaces after separators, no \\u escapes -- the same data in fewer tokens."""
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
+
+
 def _parse_reset(value: str | None) -> float | None:
     """Groq reports the same wait either as plain seconds ("Retry-After") or as e.g. "1m2.5s"/"34.8s" (the
     x-ratelimit-reset-* headers)."""
@@ -111,7 +116,9 @@ async def generate_json(system: str, user: str, schema: type[T], temperature: fl
         except ValidationError as e:
             last_err = str(e)
             log.warning("LLM output failed validation (attempt %d): %s", attempt + 1, last_err[:300])
-            messages += [{"role": "assistant", "content": raw},
-                         {"role": "user", "content": f"That JSON was invalid: {last_err[:800]}\nReturn corrected JSON only."}]
+            # don't echo the whole broken reply back (it can be thousands of tokens): the error says what to fix
+            messages = messages[:2] + [{"role": "user",
+                                        "content": f"Your previous JSON was invalid: {last_err[:400]}\n"
+                                                   "Return the complete corrected JSON only."}]
             attempt += 1
     raise LLMError(f"LLM returned invalid JSON after {retries + 1} attempts: {last_err[:300]}")

@@ -1,5 +1,5 @@
 """Curriculum extraction (from a syllabus or a learning goal) and feedback-driven revision."""
-import json
+import re
 
 from app.schemas.curriculum import Curriculum
 from app.services import llm_service
@@ -50,7 +50,9 @@ def _fallback_title(text: str) -> str:
 
 
 async def from_syllabus(text: str) -> Curriculum:
-    snippet = f"SYLLABUS:\n{text[:MAX_SYLLABUS_CHARS]}"
+    # PDF/DOCX text is full of runs of spaces and blank lines that cost tokens and carry no meaning
+    squeezed = re.sub(r"\n\s*\n+", "\n", re.sub(r"[ \t]+", " ", text)).strip()
+    snippet = f"SYLLABUS:\n{squeezed[:MAX_SYLLABUS_CHARS]}"
     try:
         return await llm_service.generate_json(
             EXTRACT_SYSTEM, snippet, Curriculum,
@@ -70,11 +72,11 @@ async def from_syllabus(text: str) -> Curriculum:
 async def from_goal(goal: dict) -> Curriculum:
     details = {k: v for k, v in goal.items() if k in
                ("goal", "domain", "target_level", "duration", "hours_per_week", "existing_knowledge") and v}
-    return await llm_service.generate_json(GOAL_SYSTEM, json.dumps(details), Curriculum, temperature=0.4,
+    return await llm_service.generate_json(GOAL_SYSTEM, llm_service.compact(details), Curriculum, temperature=0.4,
                                             schema_hint=CURRICULUM_HINT, num_predict=CURRICULUM_NUM_PREDICT)
 
 
 async def revise(current: Curriculum, feedback: str) -> Curriculum:
-    user = f"CURRENT CURRICULUM:\n{current.model_dump_json()}\n\nFEEDBACK:\n{feedback}"
+    user = f"CURRENT CURRICULUM:\n{current.model_dump_json(exclude_none=True, exclude_defaults=True)}\n\nFEEDBACK:\n{feedback}"
     return await llm_service.generate_json(REVISE_SYSTEM, user, Curriculum,
                                             schema_hint=CURRICULUM_HINT, num_predict=CURRICULUM_NUM_PREDICT)

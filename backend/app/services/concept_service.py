@@ -1,5 +1,4 @@
 """Concept generation (per unit) and prerequisite/related-concept detection, with business validation of LLM output."""
-import json
 import logging
 
 from app.schemas.concepts import (Concept, ConceptGraph, LLMRelationships, LLMUnitConcepts,
@@ -60,7 +59,7 @@ async def generate_unit_concepts(cur: Curriculum, unit_index: int) -> list[dict]
     # generous headroom: gpt-oss is a reasoning model whose hidden "thinking" tokens count against this same cap and
     # vary widely (observed 250-1300+ on this prompt shape) -- too tight a cap truncates mid-thought, leaving no room
     # for the actual answer and getting rejected by Groq's own JSON validation before it even reaches us
-    res = await llm_service.generate_json(CONCEPT_SYSTEM, json.dumps(payload), LLMUnitConcepts, temperature=0.3,
+    res = await llm_service.generate_json(CONCEPT_SYSTEM, llm_service.compact(payload), LLMUnitConcepts, temperature=0.3,
                                           schema_hint=CONCEPT_HINT, num_ctx=3072, num_predict=2800, retries=2)
     valid_outcomes = set(cur.outcomes)
     return [
@@ -86,17 +85,19 @@ def assemble_concepts(per_unit: list[list[dict]]) -> list[Concept]:
 
 
 def _brief(c: Concept) -> dict:
-    return {"name": c.name, "unit": c.unit, "description": c.description}
+    return {"name": c.name, "description": c.description}
 
 
 async def _relationships_for_unit(new_concepts: list[Concept], earlier_concepts: list[Concept]) -> LLMRelationships:
+    # new concepts keep their description (the model reasons over them); earlier ones are context only, so their
+    # names alone are enough and are by far the largest part of the prompt on a long course
     payload = {"new_concepts": [_brief(c) for c in new_concepts],
-               "earlier_concepts": [_brief(c) for c in earlier_concepts]}
+               "earlier_concepts": [c.name for c in earlier_concepts]}
     # bound the output cap by how many pairs are actually possible, so a small unit doesn't pay for a large one;
     # floor is high enough to survive gpt-oss's variable reasoning-token overhead (see generate_unit_concepts)
     cap = min(2800, 1200 + 40 * len(new_concepts) * max(1, len(earlier_concepts) + len(new_concepts)))
     return await llm_service.generate_json(
-        REL_SYSTEM, json.dumps(payload), LLMRelationships, temperature=0.2,
+        REL_SYSTEM, llm_service.compact(payload), LLMRelationships, temperature=0.2,
         schema_hint=REL_HINT, num_ctx=4096, num_predict=cap, retries=2)
 
 

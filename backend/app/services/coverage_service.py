@@ -4,7 +4,6 @@
 
 A required point counts as covered when some window of the resource text is semantically close to it (embedding
 cosine) AND shares at least one significant term with it (so an unrelated but generic page cannot cover a point)."""
-import json
 import logging
 
 from pydantic import BaseModel, Field, field_validator
@@ -48,7 +47,7 @@ POINTS_HINT = 'Reply with JSON only, in this shape:\n{"points":["put and get ope
 
 async def required_points(course: str, concept: dict) -> list[str]:
     payload = {"course": course, "concept": concept["name"], "description": concept.get("description", "")}
-    res = await llm_service.generate_json(POINTS_SYSTEM, json.dumps(payload), RequiredPoints, temperature=0.2,
+    res = await llm_service.generate_json(POINTS_SYSTEM, llm_service.compact(payload), RequiredPoints, temperature=0.2,
                                           schema_hint=POINTS_HINT, num_predict=300)
     return res.points
 
