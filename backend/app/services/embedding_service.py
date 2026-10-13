@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import threading
+import time
 
 log = logging.getLogger(__name__)
 
@@ -35,3 +36,15 @@ def embed_sync(texts: list[str]) -> list[list[float]]:
 
 async def embed(texts: list[str]) -> list[list[float]]:
     return await asyncio.to_thread(embed_sync, texts)
+
+
+async def warmup() -> None:
+    """Load the model (import torch, read/download the weights, run one encode) at server start instead of on the first
+    user's "save concept map" click, where it can take minutes on a fresh deploy. Best effort: a failure here just means
+    the first real call loads it as before."""
+    t0 = time.perf_counter()
+    try:
+        await asyncio.to_thread(embed_sync, ["warm up"])
+        log.info("embedding model ready in %.1fs", time.perf_counter() - t0)
+    except Exception as e:
+        log.warning("embedding warm-up failed (will retry on first use): %s", e)

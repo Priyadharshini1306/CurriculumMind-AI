@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import adaptive, auth, courses, dashboard, concepts, curriculum, graph, learner, learning_path, quiz, resources, sequencing, upload
 from app.core import mongo, neo4j
 from app.core.config import get_settings
+from app.services import embedding_service
 from app.services.embedding_service import EmbeddingError
 from app.services.llm_service import LLMError
 
@@ -49,8 +50,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Neo4j not ready: %s", e)
     keepalive = asyncio.create_task(_keepalive())
+    warmup = asyncio.create_task(embedding_service.warmup())  # in the background: the API serves requests meanwhile
     yield
     keepalive.cancel()
+    warmup.cancel()
     await mongo.close()
     await neo4j.close()
 

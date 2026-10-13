@@ -1,8 +1,13 @@
 """Persist an approved curriculum + concept graph to Neo4j, with embeddings for vector search."""
+import logging
+import time
+
 from app.repositories import neo4j_repository as repo
 from app.schemas.concepts import ConceptGraph
 from app.schemas.curriculum import Curriculum
 from app.services import embedding_service
+
+log = logging.getLogger(__name__)
 
 
 def _norm(s: str) -> str:
@@ -54,10 +59,14 @@ def build_payload(curriculum_id: str, owner_id: str, cur: Curriculum, graph: Con
 
 async def save(curriculum_id: str, owner_id: str, cur: Curriculum, graph: ConceptGraph) -> dict:
     p = build_payload(curriculum_id, owner_id, cur, graph)
-    for rows in (p["concepts"], p["topics"]):
-        vecs = await embedding_service.embed([r["text"] for r in rows])
-        for r, v in zip(rows, vecs):
-            r["embedding"] = v
+    t0 = time.perf_counter()
+    rows = p["concepts"] + p["topics"]
+    vecs = await embedding_service.embed([r["text"] for r in rows])  # one batch for everything
+    for r, v in zip(rows, vecs):
+        r["embedding"] = v
+    t1 = time.perf_counter()
     await repo.save_curriculum_graph(p)
+    log.info("graph save %s: embedded %d texts in %.1fs, wrote to Neo4j in %.1fs",
+             curriculum_id, len(rows), t1 - t0, time.perf_counter() - t1)
     return {"concepts": len(p["concepts"]), "topics": len(p["topics"]), "units": len(p["units"]),
             "prerequisites": len(p["prereqs"]), "related": len(p["related"])}
