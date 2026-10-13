@@ -8,11 +8,34 @@ def _clean(s: str) -> str:
     return " ".join(s.split())
 
 
+def _lenient_items(v):
+    """LLMs sometimes pad object lists with "" / null, or give a bare string where an object belongs. Drop the blanks
+    and wrap bare strings as {"title": ...} so one glitchy entry doesn't fail the whole curriculum."""
+    if not isinstance(v, list):
+        return v
+    out = []
+    for item in v:
+        if isinstance(item, str):
+            item = item.strip()
+            if item:
+                out.append({"title": item})
+        elif item:
+            out.append(item)
+    return out
+
+
 class Topic(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     subtopics: list[str] = Field(default_factory=list)
 
     _t = field_validator("title")(_clean)
+
+    @field_validator("subtopics", mode="before")
+    @classmethod
+    def drop_blank_subs(cls, v):
+        if not isinstance(v, list):
+            return v
+        return [s for s in v if isinstance(s, str) and s.strip()]
 
     @field_validator("subtopics")
     @classmethod
@@ -33,6 +56,7 @@ class Unit(BaseModel):
     topics: list[Topic] = Field(default_factory=list)
 
     _t = field_validator("title")(_clean)
+    _lenient_topics = field_validator("topics", mode="before")(_lenient_items)
 
 
 class Curriculum(BaseModel):
@@ -46,14 +70,17 @@ class Curriculum(BaseModel):
     units: list[Unit] = Field(min_length=1)
 
     _c = field_validator("course")(_clean)
+    _lenient_units = field_validator("units", mode="before")(_lenient_items)
 
     @field_validator("units")
     @classmethod
     def unique_units(cls, v: list[Unit]) -> list[Unit]:
-        titles = [u.title.lower() for u in v]
-        if len(titles) != len(set(titles)):
-            raise ValueError("duplicate unit titles")
-        return v
+        seen, out = set(), []
+        for u in v:
+            if u.title.lower() not in seen:
+                seen.add(u.title.lower())
+                out.append(u)
+        return out
 
 
 class DraftStatus(str, Enum):

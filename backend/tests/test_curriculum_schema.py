@@ -16,6 +16,12 @@ def test_requires_units():
         Curriculum.model_validate({"course": "X", "units": []})
 
 
-def test_duplicate_units_rejected():
-    with pytest.raises(ValidationError):
-        Curriculum.model_validate({"course": "X", "units": [{"title": "A"}, {"title": "a"}]})
+def test_duplicate_units_collapsed():
+    c = Curriculum.model_validate({"course": "X", "units": [{"title": "A"}, {"title": "a"}]})
+    assert [u.title for u in c.units] == ["A"]
+
+
+def test_blank_list_entries_dropped():
+    c = Curriculum.model_validate({"course": "X", "units": [{"title": "A", "topics": ["", "T"]}, "", {"title": "B"}]})
+    assert [u.title for u in c.units] == ["A", "B"]
+    assert [t.title for t in c.units[0].topics] == ["T"]

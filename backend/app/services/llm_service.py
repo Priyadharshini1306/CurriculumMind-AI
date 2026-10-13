@@ -47,9 +47,11 @@ def _parse_reset(value: str | None) -> float | None:
 async def _chat(messages: list[dict], temperature: float, num_predict: int | None = None) -> str:
     s = get_settings()
     payload = {"model": s.groq_model, "messages": messages, "temperature": temperature,
-               "response_format": {"type": "json_object"}}
+               "response_format": {"type": "json_object"}, "reasoning_effort": "low"}
     if num_predict:
-        payload["max_tokens"] = num_predict
+        # gpt-oss's hidden reasoning tokens count against max_tokens; when they eat the whole cap, Groq returns
+        # 400 json_validate_failed with an empty failed_generation. Leave headroom for reasoning on top of the JSON.
+        payload["max_tokens"] = num_predict * 2
     headers = {"Authorization": f"Bearer {s.groq_api_key}"}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as c:
