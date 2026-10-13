@@ -58,7 +58,11 @@ export default function GraphReview() {
   const cy = useRef()
   const edited = useRef(false)
 
+  // already approved (e.g. a stale tab or a double click): nothing left to review, so go on to the next step
+  const moveOn = () => reload().then(() => nav(`/app/course/${id}`, { replace: true }))
+
   const load = () => graphApi.get(id).then((s) => {
+    if (s.graph_status === 'APPROVED') return moveOn()
     setState(s)
     if (s.graph && s.graph_status !== 'GENERATING') { setGraph(s.graph); setValidation(s.validation) }
   }).catch((e) => setError(errorMessage(e)))
@@ -124,7 +128,12 @@ export default function GraphReview() {
       setError(d?.message ?? errorMessage(e)); if (d?.validation) setValidation(d.validation)
     } finally { setBusy(false) }
   }
-  const approve = () => act(async () => { await graphApi.verify(id, graph); await reload(); nav(`/app/course/${id}`) })
+  const approve = () => act(async () => {
+    try { await graphApi.verify(id, graph) } catch (e) {
+      if (e.response?.status !== 409) throw e // 409 = already approved, so just continue
+    }
+    await moveOn()
+  })
   const askAI = () => act(async () => { await graphApi.revise(id, feedback, graph); setFeedback(''); edited.current = false; await load() })
 
   const v = validation
