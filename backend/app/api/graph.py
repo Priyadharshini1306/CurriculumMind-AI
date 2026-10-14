@@ -4,6 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.deps import current_user
+from app.core import neo4j
 from app.core.mongo import get_db
 from app.repositories.mongo_repository import DraftRepository, FeedbackRepository, now
 from app.repositories import neo4j_repository
@@ -130,6 +131,7 @@ async def verify(body: GraphBody, bg: BackgroundTasks, user: dict = Depends(curr
 async def _save_job(draft_id, curriculum_id: str, owner_id: str, cur: Curriculum, graph: ConceptGraph) -> None:
     """Store the approved graph in Neo4j. Failures are recorded (and retryable), never raised."""
     try:
+        await neo4j.ensure_reachable()  # fail in seconds with a clear reason, not after minutes of retries
         summary = await graph_store_service.save(curriculum_id, owner_id, cur, graph)
         await _set(draft_id, neo4j_status="SAVED", neo4j_error=None, neo4j_summary=summary)
         # graph stored: draft the study plan immediately (fast, deterministic); the learner reviews it next
@@ -139,7 +141,7 @@ async def _save_job(draft_id, curriculum_id: str, owner_id: str, cur: Curriculum
         await _set(draft_id, neo4j_status="FAILED", neo4j_error=str(e))
     except Exception as e:
         log.exception("neo4j save failed")
-        await _set(draft_id, neo4j_status="FAILED", neo4j_error=f"Neo4j save failed: {e}")
+        await _set(draft_id, neo4j_status="FAILED", neo4j_error=neo4j.explain(e))
 
 
 @router.post("/save", status_code=202)

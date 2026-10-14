@@ -1,6 +1,8 @@
 import asyncio
 
 import pytest
+
+from app.core.neo4j import Neo4jUnavailable
 from neo4j.exceptions import ServiceUnavailable
 
 from app.repositories import neo4j_repository as repo
@@ -35,5 +37,6 @@ def test_gives_up_after_max_attempts(monkeypatch):
         return None
 
     monkeypatch.setattr(repo._asyncio, "sleep", no_sleep)
-    with pytest.raises(ServiceUnavailable):
+    with pytest.raises(Neo4jUnavailable, match="Cannot reach the Neo4j database") as exc:
         asyncio.run(repo._with_retry(always)())
+    assert isinstance(exc.value.__cause__, ServiceUnavailable)  # the original error is kept as the cause

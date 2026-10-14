@@ -488,6 +488,9 @@ from neo4j.exceptions import ServiceUnavailable as _ServiceUnavailable
 from neo4j.exceptions import SessionExpired as _SessionExpired
 from neo4j.exceptions import TransientError as _TransientError
 
+from app.core.neo4j import Neo4jUnavailable as _Neo4jUnavailable
+from app.core.neo4j import explain as _explain
+
 _log = _logging.getLogger(__name__)
 NOT_RETRIED = {"record_attempt"}  # CREATEs a relationship: a lost response could otherwise duplicate it
 RETRIES = 3
@@ -508,7 +511,8 @@ def _with_retry(fn):
             except (_ServiceUnavailable, _SessionExpired, _TransientError, ConnectionError, OSError,
                     _asyncio.TimeoutError) as e:
                 if attempt == RETRIES - 1:
-                    raise
+                    # a readable message instead of a bare TimeoutError() with empty text
+                    raise _Neo4jUnavailable(_explain(e)) from e
                 _log.warning("neo4j %s failed (%s); retrying", fn.__name__, type(e).__name__)
                 await _asyncio.sleep(1.5 * (attempt + 1))
     return wrapper

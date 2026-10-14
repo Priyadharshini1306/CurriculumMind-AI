@@ -5,6 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from app.api import resources as resources_api
 from app.api.deps import current_user
+from app.core import neo4j
 from app.core.mongo import get_db
 from app.repositories import neo4j_repository
 from app.repositories.mongo_repository import DraftRepository, FeedbackRepository, now
@@ -83,12 +84,17 @@ async def validate(req: VerifyRequest, user: dict = Depends(current_user)):
 async def _save_job(draft_id, curriculum_id: str, owner_id: str, plan: Plan, course: str = "") -> None:
     """Store the approved plan, enroll the learner, then find and check study resources (all automatic)."""
     try:
+        await neo4j.ensure_reachable()
         await neo4j_repository.save_sequence(curriculum_id, owner_id, svc.structure(plan))
-        await neo4j_repository.enroll(owner_id, curriculum_id)
+        # enroll() is False when the Course node isn't in Neo4j (e.g. the graph was wiped): the learner would then see
+        # "Not enrolled in any course" everywhere, so treat it as a failed save the user can retry, not as success
+        if not await neo4j_repository.enroll(owner_id, curriculum_id):
+            raise RuntimeError("The course is missing from the knowledge graph, so you could not be enrolled. "
+                               "Go back and save the concept map again.")
         await _set(draft_id, plan_neo4j_status="SAVED", plan_neo4j_error=None)
     except Exception as e:
         log.exception("sequence save failed")
-        await _set(draft_id, plan_neo4j_status="FAILED", plan_neo4j_error=str(e))
+        await _set(draft_id, plan_neo4j_status="FAILED", plan_neo4j_error=neo4j.explain(e))
         return
     try:
         await resources_api._set(draft_id, resources_status="RUNNING", resources_error=None, resources_progress="0")

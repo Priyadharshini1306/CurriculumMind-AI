@@ -1,8 +1,38 @@
+import asyncio
+
 from neo4j import AsyncDriver, AsyncGraphDatabase
+from neo4j.exceptions import AuthError, ServiceUnavailable, SessionExpired
 
 from app.core.config import get_settings
 
 _driver: AsyncDriver | None = None
+
+
+class Neo4jUnavailable(Exception):
+    """Neo4j can't be used right now; the message says why and what to do about it."""
+
+
+def explain(e: BaseException) -> str:
+    """A readable reason for a Neo4j failure. Bare exceptions such as TimeoutError have an empty message, which used to
+    surface to users as just "Neo4j save failed: "."""
+    if isinstance(e, Neo4jUnavailable):
+        return str(e)
+    if isinstance(e, AuthError):
+        return ("Neo4j rejected the login. Check NEO4J_USERNAME and NEO4J_PASSWORD in the server environment "
+                "(the Aura password is only shown once, when the instance is created).")
+    if isinstance(e, (ServiceUnavailable, SessionExpired, TimeoutError, ConnectionError, OSError)):
+        return ("Cannot reach the Neo4j database. If you use Neo4j Aura Free, the instance is probably paused or "
+                "deleted: open console.neo4j.io and resume it, and check that NEO4J_URI in the server environment "
+                f"matches it. Then press Try again. ({type(e).__name__})")
+    return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+
+
+async def ensure_reachable(timeout: float = 10) -> None:
+    """Fail in seconds, with a clear message, instead of after minutes of retries inside a long job."""
+    try:
+        await asyncio.wait_for(get_driver().verify_connectivity(), timeout)
+    except Exception as e:
+        raise Neo4jUnavailable(explain(e)) from e
 
 
 def get_driver() -> AsyncDriver:

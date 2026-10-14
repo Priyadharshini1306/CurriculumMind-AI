@@ -35,11 +35,10 @@ async def _keepalive() -> None:
             pass
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    secret = get_settings().jwt_secret
-    if len(secret) < 32:
-        log.error("JWT_SECRET is missing or shorter than 32 characters: logins will fail or be insecure")
+async def _init_databases() -> None:
+    """Create indexes/constraints. Runs in the background: if a database is paused or slow, the server must still start
+    answering requests (a host's health check fails if startup blocks for a minute), and each request reports the
+    database problem itself."""
     try:
         await mongo.init_indexes()
     except Exception as e:
@@ -48,12 +47,20 @@ async def lifespan(app: FastAPI):
         from app.repositories.neo4j_repository import init_schema
         await init_schema()
     except Exception as e:
-        log.warning("Neo4j not ready: %s", e)
+        log.warning("Neo4j not ready (check NEO4J_URI and that the Aura instance is not paused): %s", e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    secret = get_settings().jwt_secret
+    if len(secret) < 32:
+        log.error("JWT_SECRET is missing or shorter than 32 characters: logins will fail or be insecure")
+    init = asyncio.create_task(_init_databases())
     keepalive = asyncio.create_task(_keepalive())
     warmup = asyncio.create_task(embedding_service.warmup())  # in the background: the API serves requests meanwhile
     yield
-    keepalive.cancel()
-    warmup.cancel()
+    for t in (init, keepalive, warmup):
+        t.cancel()
     await mongo.close()
     await neo4j.close()
 
