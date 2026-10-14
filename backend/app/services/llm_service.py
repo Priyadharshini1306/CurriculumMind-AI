@@ -49,6 +49,24 @@ def _parse_reset(value: str | None) -> float | None:
     return (int(minutes) * 60 if minutes else 0) + float(seconds)
 
 
+def _extract_json(text: str) -> str:
+    """The JSON object inside a reply that may carry code fences or prose around it."""
+    text = (text or "").strip()
+    i, j = text.find("{"), text.rfind("}")
+    return text[i:j + 1] if 0 <= i < j else text
+
+
+def _failed_generation(r: httpx.Response) -> str | None:
+    """Groq's JSON mode sometimes rejects output that it still returns in `failed_generation`."""
+    try:
+        err = r.json().get("error", {})
+    except ValueError:
+        return None
+    if err.get("code") != "json_validate_failed":
+        return None
+    return err.get("failed_generation") or ""
+
+
 async def _chat(messages: list[dict], temperature: float, num_predict: int | None = None) -> str:
     s = get_settings()
     payload = {"model": s.groq_model, "messages": messages, "temperature": temperature,
@@ -58,9 +76,27 @@ async def _chat(messages: list[dict], temperature: float, num_predict: int | Non
         # 400 json_validate_failed with an empty failed_generation. Leave headroom for reasoning on top of the JSON.
         payload["max_tokens"] = num_predict * 2
     headers = {"Authorization": f"Bearer {s.groq_api_key}"}
+    url = f"{s.groq_base_url}/chat/completions"
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60, connect=10)) as c:
-            r = await c.post(f"{s.groq_base_url}/chat/completions", json=payload, headers=headers)
+            r = await c.post(url, json=payload, headers=headers)
+            failed = _failed_generation(r) if r.status_code == 400 else None
+            if failed is not None:
+                # Groq's strict JSON mode rejected the output (truncated, or a stray character). Recover instead of
+                # failing the whole job: (1) the "failed" text is often valid JSON that Groq's validator just refused;
+                # (2) otherwise ask again without JSON mode, with more room, and parse the JSON ourselves.
+                log.warning("Groq json_validate_failed; salvaging (failed_generation=%d chars)", len(failed))
+                try:
+                    json.loads(_extract_json(failed))
+                    return _extract_json(failed)
+                except ValueError:
+                    pass
+                relaxed = {k: v for k, v in payload.items() if k != "response_format"}
+                if "max_tokens" in relaxed:
+                    relaxed["max_tokens"] = int(relaxed["max_tokens"] * 1.5)
+                r = await c.post(url, json=relaxed, headers=headers)
+                if r.status_code < 400:
+                    return _extract_json(r.json()["choices"][0]["message"]["content"])
             if r.status_code == 429:
                 retry_after = (_parse_reset(r.headers.get("retry-after"))
                                or _parse_reset(r.headers.get("x-ratelimit-reset-tokens"))

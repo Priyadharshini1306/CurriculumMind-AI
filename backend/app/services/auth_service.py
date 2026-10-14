@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import timedelta
 
@@ -12,6 +13,7 @@ from app.schemas.auth import Role, LoginRequest, RegisterRequest, TokenResponse,
 log = logging.getLogger(__name__)
 users = UserRepository()
 sessions = SessionRepository()
+_background: set[asyncio.Task] = set()  # keeps fire-and-forget tasks alive until they finish
 
 
 def to_user_out(doc: dict) -> UserOut:
@@ -24,19 +26,29 @@ async def _issue(doc: dict) -> TokenResponse:
     return TokenResponse(access_token=create_token(str(doc["_id"]), Role.LEARNER.value, sid), user=to_user_out(doc))
 
 
+async def _ensure_learner(user_id: str) -> None:
+    try:
+        await graph.ensure_learner(user_id)
+    except Exception as e:  # Neo4j may be down or paused; enrolling MERGEs the Learner node later anyway
+        log.warning("Could not create Learner node: %s", e)
+
+
 async def register(req: RegisterRequest) -> TokenResponse:
-    doc = await users.create(req.name, req.email, hash_password(req.password), Role.LEARNER.value)
+    # bcrypt is deliberately slow CPU work: run it in a thread so it doesn't freeze every other request
+    pw_hash = await asyncio.to_thread(hash_password, req.password)
+    doc = await users.create(req.name, req.email, pw_hash, Role.LEARNER.value)
     if doc is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Email already registered")
-    try:
-        await graph.ensure_learner(str(doc["_id"]))
-    except Exception as e:  # Neo4j may be down; the Learner node is re-created lazily later
-        log.warning("Could not create Learner node: %s", e)
+    # Signing up must not wait on Neo4j (a paused/slow instance made it hang for minutes): create the Learner node
+    # in the background.
+    task = asyncio.create_task(_ensure_learner(str(doc["_id"])))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
     return await _issue(doc)
 
 
 async def login(req: LoginRequest) -> TokenResponse:
     doc = await users.by_email(req.email)
-    if not doc or not verify_password(req.password, doc["password_hash"]):
+    if not doc or not await asyncio.to_thread(verify_password, req.password, doc["password_hash"]):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid email or password")
     return await _issue(doc)

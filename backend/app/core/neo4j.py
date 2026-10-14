@@ -1,11 +1,14 @@
 import asyncio
+import logging
+import socket
 
 from neo4j import AsyncDriver, AsyncGraphDatabase
 from neo4j.exceptions import AuthError, ServiceUnavailable, SessionExpired
 
 from app.core.config import get_settings
 
-_driver: AsyncDriver | None = None
+log = logging.getLogger(__name__)
+_driver = None  # AsyncDriver (Bolt) or HttpDriver (HTTPS), same interface for the repository
 
 
 class Neo4jUnavailable(Exception):
@@ -21,9 +24,10 @@ def explain(e: BaseException) -> str:
         return ("Neo4j rejected the login. Check NEO4J_USERNAME and NEO4J_PASSWORD in the server environment "
                 "(the Aura password is only shown once, when the instance is created).")
     if isinstance(e, (ServiceUnavailable, SessionExpired, TimeoutError, ConnectionError, OSError)):
-        return ("Cannot reach the Neo4j database. If you use Neo4j Aura Free, the instance is probably paused or "
-                "deleted: open console.neo4j.io and resume it, and check that NEO4J_URI in the server environment "
-                f"matches it. Then press Try again. ({type(e).__name__})")
+        return ("Cannot reach the Neo4j database. Check that the Aura instance is running (not paused or deleted) and "
+                "that NEO4J_URI in the server environment matches it. If the instance is running, your network may "
+                "block outbound port 7687: set NEO4J_TRANSPORT=http to use port 443 instead. "
+                f"Then press Try again. ({type(e).__name__})")
     return f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
 
 
@@ -35,13 +39,36 @@ async def ensure_reachable(timeout: float = 10) -> None:
         raise Neo4jUnavailable(explain(e)) from e
 
 
-def get_driver() -> AsyncDriver:
+def _bolt_port_open(uri: str) -> bool:
+    """Quick TCP check of the Bolt port, to choose a transport once at startup."""
+    host_port = uri.split("://", 1)[1].split("/")[0]
+    host, _, port = host_port.partition(":")
+    try:
+        socket.create_connection((host, int(port or 7687)), timeout=4).close()
+        return True
+    except OSError:
+        return False
+
+
+def get_driver():
     global _driver
     s = get_settings()
     if _driver is None:
         if not s.neo4j_uri:
             raise RuntimeError("NEO4J_URI is not configured")
         uri = s.neo4j_uri
+        host = uri.split("://", 1)[1].split("/")[0].split(":")[0]
+        tls = uri.split("://", 1)[0].endswith(("+s", "+ssc"))  # only TLS (Aura) URIs have an HTTPS twin
+        mode = s.neo4j_transport.lower()
+        if mode == "auto":
+            mode = "bolt" if (not tls or _bolt_port_open(uri)) else "http"
+            if mode == "http":
+                log.warning("Neo4j Bolt port is not reachable from here; using HTTPS (port 443) instead")
+        if mode == "http":
+            from app.core.neo4j_http import HttpDriver
+            _driver = HttpDriver(host, s.neo4j_username, s.neo4j_password, s.neo4j_database or None,
+                                 verify=not s.neo4j_trust_self_signed)
+            return _driver
         if s.neo4j_trust_self_signed:
             uri = uri.replace("neo4j+s://", "neo4j+ssc://").replace("bolt+s://", "bolt+ssc://")
         _driver = AsyncGraphDatabase.driver(
